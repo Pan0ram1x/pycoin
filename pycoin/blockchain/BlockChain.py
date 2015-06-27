@@ -2,7 +2,9 @@ import logging
 import weakref
 
 from .ChainFinder import ChainFinder
+from ..serialize import b2h_rev
 
+logger = logging.getLogger(__name__)
 ZERO_HASH = b'\0' * 32
 
 
@@ -109,7 +111,8 @@ class BlockChain(object):
                     if c in excluded:
                         break
                     excluded.add(c)
-                    yield (c, old_chain_finder.parent_lookup[c])
+                    if c in old_chain_finder.parent_lookup:
+                        yield (c, old_chain_finder.parent_lookup[c])
         self.chain_finder.load_nodes(iterate())
         self.parent_hash = the_hash
 
@@ -154,10 +157,10 @@ class BlockChain(object):
             old_path = old_longest_chain
             new_path = new_longest_chain
         if old_path:
-            logging.debug("old_path is %r-%r", old_path[0], old_path[-1])
+            logger.debug("old_path is %r-%r", old_path[0], old_path[-1])
         if new_path:
-            logging.debug("new_path is %r-%r", new_path[0], new_path[-1])
-            logging.debug("block chain now has %d elements", self.length())
+            logger.debug("new_path is %r-%r", new_path[0], new_path[-1])
+            logger.debug("block chain now has %d elements", self.length())
 
         # return a list of operations:
         # ("add"/"remove", the_hash, the_index)
@@ -176,3 +179,13 @@ class BlockChain(object):
             callback(self, ops)
 
         return ops
+
+    def __repr__(self):
+        local_block_chain = self._longest_local_block_chain()
+        if local_block_chain:
+            finish = b2h_rev(local_block_chain[0])
+            start = b2h_rev(local_block_chain[-1])
+            longest_chain = "longest chain %s to %s of size %d" % (start, finish, self.unlocked_length())
+        else:
+            longest_chain = "no unlocked elements"
+        return "<BlockChain with %d locked elements and %s>" % (self.locked_length(), longest_chain)

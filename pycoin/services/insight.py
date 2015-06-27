@@ -3,12 +3,16 @@
 
 import decimal
 import json
-
+import logging
+import io
 
 try:
-    from urllib2 import urlopen
+    from urllib2 import HTTPError, urlopen
+    from urllib import urlencode
 except ImportError:
     from urllib.request import urlopen
+    from urllib.error import HTTPError
+    from urllib.parse import urlencode
 
 from pycoin.block import BlockHeader
 from pycoin.convention import btc_to_satoshi
@@ -26,7 +30,6 @@ class InsightService(object):
         self.base_url = base_url
 
     def get_blockchain_tip(self):
-        "https://search.bitaccess.ca/api/status?q=getLastBlockHash"
         URL = "%s/api/status?q=getLastBlockHash" % self.base_url
         d = urlopen(URL).read().decode("utf8")
         r = json.loads(d)
@@ -54,6 +57,9 @@ class InsightService(object):
         blockheader.height = r.get("height")
         return blockheader, tx_hashes
 
+    def get_block_height(self, block_hash):
+        return self.get_blockheader_with_transaction_hashes(block_hash)[0].height
+
     def get_tx(self, tx_hash):
         URL = "%s/api/tx/%s" % (self.base_url, b2h_rev(tx_hash))
         r = json.loads(urlopen(URL).read().decode("utf8"))
@@ -61,6 +67,9 @@ class InsightService(object):
         if tx.hash() == tx_hash:
             return tx
         return None
+
+    def get_tx_confirmation_block(self, tx_hash):
+        return self.get_tx(tx_hash).confirmation_block_hash
 
     def spendables_for_address(self, bitcoin_address):
         """
@@ -71,7 +80,7 @@ class InsightService(object):
         r = json.loads(urlopen(URL).read().decode("utf8"))
         spendables = []
         for u in r:
-            coin_value = btc_to_satoshi(u.get("amount"))
+            coin_value = btc_to_satoshi(str(u.get("amount")))
             script = h2b(u.get("scriptPubKey"))
             previous_hash = h2b_rev(u.get("txid"))
             previous_index = u.get("vout")
@@ -83,6 +92,20 @@ class InsightService(object):
         for addr in bitcoin_addresses:
             spendables.extend(self.spendables_for_address(addr))
         return spendables
+
+    def send_tx(self, tx):
+        s = io.BytesIO()
+        tx.stream(s)
+        tx_as_hex = b2h(s.getvalue())
+        data = urlencode(dict(rawtx=tx_as_hex)).encode("utf8")
+        URL = "%s/api/tx/send" % self.base_url
+        try:
+            d = urlopen(URL, data=data).read()
+            return d
+        except HTTPError as err:
+            if err.code == 400:
+                raise ValueError(err.readline())
+            raise err
 
 
 def tx_from_json_dict(r):
@@ -105,4 +128,9 @@ def tx_from_json_dict(r):
         coin_value = btc_to_satoshi(decimal.Decimal(vout.get("value")))
         script = tools.compile(vout.get("scriptPubKey").get("asm"))
         txs_out.append(TxOut(coin_value, script))
-    return Tx(version, txs_in, txs_out, lock_time)
+    tx = Tx(version, txs_in, txs_out, lock_time)
+    bh = r.get("blockhash")
+    if bh:
+        bh = h2b_rev(bh)
+    tx.confirmation_block_hash = bh
+    return tx
